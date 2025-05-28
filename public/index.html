@@ -786,12 +786,16 @@
                 </div>
                 <div class="form-group">
                     <label>Response Type</label>
-                    <select class="response-type">
+                    <select class="response-type" onchange="updateResponseOptions(this)">
                         <option value="open">Open Response</option>
                         <option value="yesno">Yes/No</option>
                         <option value="choice">Multiple Choice</option>
                         <option value="rating">Rating (1-10)</option>
                     </select>
+                </div>
+                <div class="response-options" style="display: none;">
+                    <label>Options (one per line)</label>
+                    <textarea placeholder="Option A\nOption B\nOption C" class="choice-options"></textarea>
                 </div>
             `;
             
