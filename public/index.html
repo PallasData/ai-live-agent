@@ -325,6 +325,19 @@
             margin-bottom: 10px;
         }
 
+        .response-options {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+
+        .response-options label {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
         @media (max-width: 768px) {
             .nav-tabs {
                 flex-direction: column;
@@ -786,7 +799,7 @@
                 </div>
                 <div class="form-group">
                     <label>Response Type</label>
-                    <select class="response-type" onchange="updateResponseOptions(this)">
+                    <select class="response-type">
                         <option value="open">Open Response</option>
                         <option value="yesno">Yes/No</option>
                         <option value="choice">Multiple Choice</option>
@@ -795,11 +808,17 @@
                 </div>
                 <div class="response-options" style="display: none;">
                     <label>Options (one per line)</label>
-                    <textarea placeholder="Option A\nOption B\nOption C" class="choice-options"></textarea>
+                    <textarea placeholder="Republican\nDemocrat\nIndependent\nOther" class="choice-options" rows="4"></textarea>
                 </div>
             `;
             
             questionsList.appendChild(questionDiv);
+            
+            // Add event listener to the select element
+            const selectElement = questionDiv.querySelector('.response-type');
+            selectElement.addEventListener('change', function() {
+                updateResponseOptions(this);
+            });
         }
 
         function removeQuestion(button) {
@@ -820,13 +839,14 @@
             document.querySelectorAll('.question-item').forEach((item, index) => {
                 const text = item.querySelector('.question-text').value.trim();
                 const type = item.querySelector('.response-type').value;
+                const options = item.querySelector('.choice-options')?.value.split('\n').filter(o => o.trim()) || [];
                 
                 if (text) {
                     questions.push({
                         id: index + 1,
                         text,
                         type,
-                        options: []
+                        options
                     });
                 }
             });
@@ -876,6 +896,9 @@
             
             survey.questions.forEach((q, index) => {
                 preview += `Question ${index + 1}: ${q.text}\n`;
+                if (q.type === 'choice' && q.options.length > 0) {
+                    preview += `Options: ${q.options.join(', ')}\n`;
+                }
                 preview += `Response Type: ${q.type}\n\n`;
             });
             
