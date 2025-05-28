@@ -80,10 +80,10 @@ async function initializeDatabase() {
 }
 
 // Initialize Twilio client
-let twilioClient;
-if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-  twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-}
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
 // API Routes
 
@@ -184,9 +184,7 @@ app.post('/api/campaigns', async (req, res) => {
     const campaign = campaignResult.rows[0];
     
     // Start making calls asynchronously
-    if (twilioClient) {
-      startCampaignCalls(campaign.id, surveyId, contacts);
-    }
+    startCampaignCalls(campaign.id, surveyId, contacts);
     
     res.json(campaign);
   } catch (error) {
@@ -219,7 +217,7 @@ app.get('/api/calls', async (req, res) => {
     const result = await pool.query(`
       SELECT c.*, co.name as contact_name, co.phone as contact_phone 
       FROM calls c 
-      LEFT JOIN contacts co ON c.contact_id = co.id 
+      JOIN contacts co ON c.contact_id = co.id 
       ORDER BY c.timestamp DESC 
       LIMIT 50
     `);
@@ -229,15 +227,95 @@ app.get('/api/calls', async (req, res) => {
   }
 });
 
+// Twilio webhook for call status updates
+app.post('/api/twilio/status', async (req, res) => {
+  try {
+    const { CallSid, CallStatus, CallDuration } = req.body;
+    
+    // Update call record with Twilio status
+    await pool.query(
+      'UPDATE calls SET status = $1, duration = $2 WHERE twilio_call_sid = $3',
+      [CallStatus, CallDuration || 0, CallSid]
+    );
+    
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Twilio status webhook error:', error);
+    res.status(500).send('Error');
+  }
+});
+
+// TwiML endpoint for handling calls
+app.post('/api/twilio/voice', async (req, res) => {
+  try {
+    const { CallSid } = req.body;
+    
+    // Get call details from database
+    const callResult = await pool.query('SELECT * FROM calls WHERE twilio_call_sid = $1', [CallSid]);
+    if (callResult.rows.length === 0) {
+      return res.status(404).send('Call not found');
+    }
+    
+    const call = callResult.rows[0];
+    const surveyResult = await pool.query('SELECT * FROM surveys WHERE id = $1', [call.survey_id]);
+    const survey = surveyResult.rows[0];
+    
+    // Generate TwiML response
+    const twiml = generateTwiML(survey, call.id);
+    
+    res.type('text/xml');
+    res.send(twiml);
+  } catch (error) {
+    console.error('TwiML generation error:', error);
+    res.status(500).send('Error generating TwiML');
+  }
+});
+
+// Handle survey responses
+app.post('/api/twilio/gather', async (req, res) => {
+  try {
+    const { Digits, SpeechResult, CallSid } = req.body;
+    const callId = req.query.callId;
+    const questionIndex = parseInt(req.query.questionIndex || '0');
+    
+    if (!callId) {
+      return res.status(400).send('Missing call ID');
+    }
+    
+    // Get call and survey details
+    const callResult = await pool.query('SELECT * FROM calls WHERE id = $1', [callId]);
+    const call = callResult.rows[0];
+    const surveyResult = await pool.query('SELECT * FROM surveys WHERE id = $1', [call.survey_id]);
+    const survey = surveyResult.rows[0];
+    
+    // Store response
+    const response = Digits || SpeechResult || 'No response';
+    const responses = call.responses || [];
+    responses.push({
+      questionIndex,
+      question: survey.questions[questionIndex]?.text,
+      response: response
+    });
+    
+    await pool.query('UPDATE calls SET responses = $1 WHERE id = $2', [JSON.stringify(responses), callId]);
+    
+    // Generate next question or end call
+    const nextQuestionIndex = questionIndex + 1;
+    const twiml = generateTwiML(survey, callId, nextQuestionIndex);
+    
+    res.type('text/xml');
+    res.send(twiml);
+  } catch (error) {
+    console.error('Gather handler error:', error);
+    res.status(500).send('Error processing response');
+  }
+});
+
 // Test endpoints
 app.post('/api/test/twilio', async (req, res) => {
   try {
     if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
       return res.status(400).json({ error: 'Twilio credentials not configured' });
-    }
-    
-    if (!twilioClient) {
-      return res.status(500).json({ error: 'Twilio client not initialized' });
     }
     
     // Test Twilio connection by fetching account info
@@ -267,38 +345,8 @@ app.post('/api/test/elevenlabs', async (req, res) => {
   }
 });
 
-// Twilio webhook handlers
-app.post('/api/twilio/status', async (req, res) => {
-  try {
-    const { CallSid, CallStatus, CallDuration } = req.body;
-    
-    await pool.query(
-      'UPDATE calls SET status = $1, duration = $2 WHERE twilio_call_sid = $3',
-      [CallStatus, CallDuration || 0, CallSid]
-    );
-    
-    res.status(200).send('OK');
-  } catch (error) {
-    console.error('Twilio status webhook error:', error);
-    res.status(500).send('Error');
-  }
-});
-
-app.post('/api/twilio/voice', async (req, res) => {
-  try {
-    const twiml = new twilio.twiml.VoiceResponse();
-    twiml.say({ voice: 'alice' }, 'Hello! Thank you for participating in our survey. This is a test call. Goodbye!');
-    twiml.hangup();
-    
-    res.type('text/xml');
-    res.send(twiml.toString());
-  } catch (error) {
-    console.error('TwiML generation error:', error);
-    res.status(500).send('Error generating TwiML');
-  }
-});
-
 // Helper Functions
+
 async function startCampaignCalls(campaignId, surveyId, contacts) {
   console.log(`Starting campaign ${campaignId} with ${contacts.length} contacts`);
   
@@ -312,24 +360,22 @@ async function startCampaignCalls(campaignId, surveyId, contacts) {
       
       const call = callResult.rows[0];
       
-      if (twilioClient && process.env.TWILIO_PHONE_NUMBER) {
-        // Make Twilio call
-        const twilioCall = await twilioClient.calls.create({
-          to: contact.phone,
-          from: process.env.TWILIO_PHONE_NUMBER,
-          url: `${process.env.BASE_URL}/api/twilio/voice`,
-          statusCallback: `${process.env.BASE_URL}/api/twilio/status`,
-          statusCallbackMethod: 'POST'
-        });
-        
-        // Update call with Twilio SID
-        await pool.query(
-          'UPDATE calls SET twilio_call_sid = $1 WHERE id = $2',
-          [twilioCall.sid, call.id]
-        );
-        
-        console.log(`Call initiated to ${contact.name} (${contact.phone})`);
-      }
+      // Make Twilio call
+      const twilioCall = await twilioClient.calls.create({
+        to: contact.phone,
+        from: process.env.TWILIO_PHONE_NUMBER,
+        url: `${process.env.BASE_URL}/api/twilio/voice`,
+        statusCallback: `${process.env.BASE_URL}/api/twilio/status`,
+        statusCallbackMethod: 'POST'
+      });
+      
+      // Update call with Twilio SID
+      await pool.query(
+        'UPDATE calls SET twilio_call_sid = $1 WHERE id = $2',
+        [twilioCall.sid, call.id]
+      );
+      
+      console.log(`Call initiated to ${contact.name} (${contact.phone})`);
       
       // Wait between calls to avoid rate limits
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -339,8 +385,8 @@ async function startCampaignCalls(campaignId, surveyId, contacts) {
       
       // Mark call as failed
       await pool.query(
-        'UPDATE calls SET status = $1 WHERE id = $2',
-        ['failed', call.id]
+        'INSERT INTO calls (campaign_id, contact_id, survey_id, status) VALUES ($1, $2, $3, $4)',
+        [campaignId, contact.id, surveyId, 'failed']
       );
     }
   }
@@ -348,6 +394,52 @@ async function startCampaignCalls(campaignId, surveyId, contacts) {
   // Update campaign status
   await pool.query('UPDATE campaigns SET status = $1 WHERE id = $2', ['completed', campaignId]);
   console.log(`Campaign ${campaignId} completed`);
+}
+
+function generateTwiML(survey, callId, questionIndex = 0) {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const twiml = new VoiceResponse();
+  
+  if (questionIndex === 0) {
+    // Introduction
+    twiml.say({ voice: 'alice' }, survey.intro);
+  }
+  
+  if (questionIndex < survey.questions.length) {
+    // Ask question
+    const question = survey.questions[questionIndex];
+    twiml.say({ voice: 'alice' }, question.text);
+    
+    // Gather response based on question type
+    const gather = twiml.gather({
+      action: `/api/twilio/gather?callId=${callId}&questionIndex=${questionIndex}`,
+      method: 'POST',
+      timeout: 10,
+      numDigits: question.type === 'rating' ? 2 : 1
+    });
+    
+    if (question.type === 'open') {
+      gather.say({ voice: 'alice' }, 'Please speak your response after the beep.');
+    } else if (question.type === 'yesno') {
+      gather.say({ voice: 'alice' }, 'Press 1 for yes, 2 for no.');
+    } else if (question.type === 'rating') {
+      gather.say({ voice: 'alice' }, 'Press a number from 1 to 10.');
+    } else if (question.type === 'choice') {
+      const optionText = question.options.map((opt, idx) => `Press ${idx + 1} for ${opt}`).join(', ');
+      gather.say({ voice: 'alice' }, optionText);
+    }
+    
+    // If no input, repeat the question
+    twiml.say({ voice: 'alice' }, "I didn't receive a response. Let's try the next question.");
+    twiml.redirect(`/api/twilio/gather?callId=${callId}&questionIndex=${questionIndex + 1}`);
+    
+  } else {
+    // End of survey
+    twiml.say({ voice: 'alice' }, survey.outro);
+    twiml.hangup();
+  }
+  
+  return twiml.toString();
 }
 
 // Serve the frontend
