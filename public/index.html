@@ -799,26 +799,36 @@
                 </div>
                 <div class="form-group">
                     <label>Response Type</label>
-                    <select class="response-type">
+                    <select class="response-type" onchange="handleResponseTypeChange(this)">
                         <option value="open">Open Response</option>
                         <option value="yesno">Yes/No</option>
                         <option value="choice">Multiple Choice</option>
                         <option value="rating">Rating (1-10)</option>
                     </select>
                 </div>
-                <div class="response-options" style="display: none;">
-                    <label>Options (one per line)</label>
-                    <textarea placeholder="Republican\nDemocrat\nIndependent\nOther" class="choice-options" rows="4"></textarea>
+                <div class="response-options" style="display: none; margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;">
+                    <label style="color: #666; font-size: 0.9rem;">Options (one per line)</label>
+                    <textarea placeholder="Republican\nDemocrat\nIndependent\nOther" class="choice-options" rows="4" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-top: 5px;"></textarea>
                 </div>
             `;
             
             questionsList.appendChild(questionDiv);
+        }
+
+        // Use a different function name to avoid conflicts
+        function handleResponseTypeChange(selectElement) {
+            console.log('Response type changed to:', selectElement.value);
             
-            // Add event listener to the select element
-            const selectElement = questionDiv.querySelector('.response-type');
-            selectElement.addEventListener('change', function() {
-                updateResponseOptions(this);
-            });
+            const questionItem = selectElement.closest('.question-item');
+            const optionsDiv = questionItem.querySelector('.response-options');
+            
+            if (selectElement.value === 'choice') {
+                optionsDiv.style.display = 'block';
+                console.log('Showing options - should be visible now');
+            } else {
+                optionsDiv.style.display = 'none';
+                console.log('Hiding options');
+            }
         }
 
         function removeQuestion(button) {
